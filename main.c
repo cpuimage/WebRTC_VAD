@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include "timing.h"
 //采用https://github.com/mackron/dr_libs/blob/master/dr_wav.h 解码
 #define DR_WAV_IMPLEMENTATION
 
@@ -65,7 +66,8 @@ int vadProcess(int16_t *buffer, uint32_t sampleRate, size_t samplesCount, int16_
     }
     printf("Activity ： \n");
     for (int i = 0; i < nTotal; i++) {
-        int nVadRet = WebRtcVad_Process(vadInst, sampleRate, input, samples);
+        int keep_weight = 0;
+        int nVadRet = WebRtcVad_Process(vadInst, sampleRate, input, samples, keep_weight);
         if (nVadRet == -1) {
             printf("failed in WebRtcVad_Process\n");
             WebRtcVad_Free(vadInst);
@@ -92,7 +94,10 @@ void vad(char *in_file) {
         //    Aggressiveness mode (0, 1, 2, or 3)
         int16_t mode = 1;
         int per_ms = 30;
+        double startTime = now();
         vadProcess(inBuffer, sampleRate, inSampleCount, mode, per_ms);
+        double time_interval = calcElapsed(startTime, now());
+        printf("time interval: %d ms\n ", (int) (time_interval * 1000));
         free(inBuffer);
     }
 }

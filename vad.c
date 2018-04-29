@@ -9,413 +9,94 @@
  */
 
 #include "vad.h"
-
 #include <stdlib.h>
 
-int32_t WebRtcSpl_DivW32W16(int32_t num, int16_t den) {
+
+static __inline int32_t DivW32W16(int32_t num, int16_t den) {
     // Guard against division with 0
-    if (den != 0) {
-        return (int32_t) (num / den);
-    } else {
-        return (int32_t) 0x7FFFFFFF;
-    }
-}
-
-// allpass filter coefficients.
-static const int16_t kResampleAllpass[2][3] = {
-        {821,  6110, 12382},
-        {3050, 9368, 15063}
-};
-
-//
-//   decimator
-// input:  int32_t (shifted 15 positions to the left, + offset 16384) OVERWRITTEN!
-// output: int16_t (saturated) (of length len/2)
-// state:  filter state array; length = 8
-
-void
-WebRtcSpl_DownBy2IntToShort(int32_t *in, int32_t len, int16_t *out,
-                            int32_t *state) {
-    int32_t tmp0, tmp1, diff;
-    int32_t i;
-
-    len >>= 1;
-
-// lower allpass filter (operates on even input samples)
-    for (i = 0; i < len; i++) {
-        tmp0 = in[i << 1];
-        diff = tmp0 - state[1];
-// UBSan: -1771017321 - 999586185 cannot be represented in type 'int'
-
-// scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[0] + diff * kResampleAllpass[1][0];
-        state[0] = tmp0;
-        diff = tmp1 - state[2];
-// scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[1] + diff * kResampleAllpass[1][1];
-        state[1] = tmp1;
-        diff = tmp0 - state[3];
-// scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[3] = state[2] + diff * kResampleAllpass[1][2];
-        state[2] = tmp0;
-
-// divide by two and store temporarily
-        in[i << 1] = (state[3] >> 1);
-    }
-
-    in++;
-
-// upper allpass filter (operates on odd input samples)
-    for (i = 0; i < len; i++) {
-        tmp0 = in[i << 1];
-        diff = tmp0 - state[5];
-// scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[4] + diff * kResampleAllpass[0][0];
-        state[4] = tmp0;
-        diff = tmp1 - state[6];
-// scale down and round
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[5] + diff * kResampleAllpass[0][1];
-        state[5] = tmp1;
-        diff = tmp0 - state[7];
-// scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[7] = state[6] + diff * kResampleAllpass[0][2];
-        state[6] = tmp0;
-
-// divide by two and store temporarily
-        in[i << 1] = (state[7] >> 1);
-    }
-
-    in--;
-
-// combine allpass outputs
-    for (i = 0; i < len; i += 2) {
-// divide by two, add both allpass outputs and round
-        tmp0 = (in[i << 1] + in[(i << 1) + 1]) >> 15;
-        tmp1 = (in[(i << 1) + 2] + in[(i << 1) + 3]) >> 15;
-        if (tmp0 > (int32_t) 0x00007FFF)
-            tmp0 = 0x00007FFF;
-        if (tmp0 < (int32_t) 0xFFFF8000)
-            tmp0 = 0xFFFF8000;
-        out[i] = (int16_t) tmp0;
-        if (tmp1 > (int32_t) 0x00007FFF)
-            tmp1 = 0x00007FFF;
-        if (tmp1 < (int32_t) 0xFFFF8000)
-            tmp1 = 0xFFFF8000;
-        out[i + 1] = (int16_t) tmp1;
-    }
-}
-
-//
-//   decimator
-// input:  int16_t
-// output: int32_t (shifted 15 positions to the left, + offset 16384) (of length len/2)
-// state:  filter state array; length = 8
-
-void
-WebRtcSpl_DownBy2ShortToInt(const int16_t *in,
-                            int32_t len,
-                            int32_t *out,
-                            int32_t *state) {
-    int32_t tmp0, tmp1, diff;
-    int32_t i;
-
-    len >>= 1;
-
-    // lower allpass filter (operates on even input samples)
-    for (i = 0; i < len; i++) {
-        tmp0 = ((int32_t) in[i << 1] << 15) + (1 << 14);
-        diff = tmp0 - state[1];
-        // scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[0] + diff * kResampleAllpass[1][0];
-        state[0] = tmp0;
-        diff = tmp1 - state[2];
-        // UBSan: -1379909682 - 834099714 cannot be represented in type 'int'
-
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[1] + diff * kResampleAllpass[1][1];
-        state[1] = tmp1;
-        diff = tmp0 - state[3];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[3] = state[2] + diff * kResampleAllpass[1][2];
-        state[2] = tmp0;
-
-        // divide by two and store temporarily
-        out[i] = (state[3] >> 1);
-    }
-
-    in++;
-
-    // upper allpass filter (operates on odd input samples)
-    for (i = 0; i < len; i++) {
-        tmp0 = ((int32_t) in[i << 1] << 15) + (1 << 14);
-        diff = tmp0 - state[5];
-        // scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[4] + diff * kResampleAllpass[0][0];
-        state[4] = tmp0;
-        diff = tmp1 - state[6];
-        // scale down and round
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[5] + diff * kResampleAllpass[0][1];
-        state[5] = tmp1;
-        diff = tmp0 - state[7];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[7] = state[6] + diff * kResampleAllpass[0][2];
-        state[6] = tmp0;
-
-        // divide by two and store temporarily
-        out[i] += (state[7] >> 1);
-    }
-
-    //in--;
+    return (den != 0) ? (int32_t) (num / den) : (int32_t) 0x7FFFFFFF;
 }
 
 
-//   lowpass filter
-// input:  int32_t (shifted 15 positions to the left, + offset 16384)
-// output: int32_t (normalized, not saturated)
-// state:  filter state array; length = 8
-void
-WebRtcSpl_LPBy2IntToInt(const int32_t *in, int32_t len, int32_t *out,
-                        int32_t *state) {
-    int32_t tmp0, tmp1, diff;
-    int32_t i;
-
-    len >>= 1;
-
-    // lower allpass filter: odd input -> even output samples
-    in++;
-    // initial state of polyphase delay element
-    tmp0 = state[12];
-    for (i = 0; i < len; i++) {
-        diff = tmp0 - state[1];
-        // scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[0] + diff * kResampleAllpass[1][0];
-        state[0] = tmp0;
-        diff = tmp1 - state[2];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[1] + diff * kResampleAllpass[1][1];
-        state[1] = tmp1;
-        diff = tmp0 - state[3];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[3] = state[2] + diff * kResampleAllpass[1][2];
-        state[2] = tmp0;
-
-        // scale down, round and store
-        out[i << 1] = state[3] >> 1;
-        tmp0 = in[i << 1];
+static __inline uint32_t __clz_uint32(uint32_t v) {
+// Never used with input 0
+    assert(v > 0);
+#if defined(__INTEL_COMPILER)
+    return _bit_scan_reverse(v) ^ 31U;
+#elif defined(__GNUC__) && (__GNUC__ >= 4 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4))
+// This will translate either to (bsr ^ 31U), clz , ctlz, cntlz, lzcnt depending on
+// -march= setting or to a software routine in exotic machines.
+    return __builtin_clz(v);
+#elif defined(_MSC_VER)
+    // for _BitScanReverse
+#include <intrin.h>
+    {
+        uint32_t idx;
+        _BitScanReverse(&idx, v);
+        return idx ^ 31U;
     }
-    in--;
-
-    // upper allpass filter: even input -> even output samples
-    for (i = 0; i < len; i++) {
-        tmp0 = in[i << 1];
-        diff = tmp0 - state[5];
-        // UBSan: -794814117 - 1566149201 cannot be represented in type 'int'
-
-        // scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[4] + diff * kResampleAllpass[0][0];
-        state[4] = tmp0;
-        diff = tmp1 - state[6];
-        // scale down and round
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[5] + diff * kResampleAllpass[0][1];
-        state[5] = tmp1;
-        diff = tmp0 - state[7];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[7] = state[6] + diff * kResampleAllpass[0][2];
-        state[6] = tmp0;
-
-        // average the two allpass outputs, scale down and store
-        out[i << 1] = (out[i << 1] + (state[7] >> 1)) >> 15;
-    }
-
-    // switch to odd output samples
-    out++;
-
-    // lower allpass filter: even input -> odd output samples
-    for (i = 0; i < len; i++) {
-        tmp0 = in[i << 1];
-        diff = tmp0 - state[9];
-        // scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[8] + diff * kResampleAllpass[1][0];
-        state[8] = tmp0;
-        diff = tmp1 - state[10];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[9] + diff * kResampleAllpass[1][1];
-        state[9] = tmp1;
-        diff = tmp0 - state[11];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[11] = state[10] + diff * kResampleAllpass[1][2];
-        state[10] = tmp0;
-
-        // scale down, round and store
-        out[i << 1] = state[11] >> 1;
-    }
-
-    // upper allpass filter: odd input -> odd output samples
-    in++;
-    for (i = 0; i < len; i++) {
-        tmp0 = in[i << 1];
-        diff = tmp0 - state[13];
-        // scale down and round
-        diff = (diff + (1 << 13)) >> 14;
-        tmp1 = state[12] + diff * kResampleAllpass[0][0];
-        state[12] = tmp0;
-        diff = tmp1 - state[14];
-        // scale down and round
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        tmp0 = state[13] + diff * kResampleAllpass[0][1];
-        state[13] = tmp1;
-        diff = tmp0 - state[15];
-        // scale down and truncate
-        diff = diff >> 14;
-        if (diff < 0)
-            diff += 1;
-        state[15] = state[14] + diff * kResampleAllpass[0][2];
-        state[14] = tmp0;
-
-        // average the two allpass outputs, scale down and store
-        out[i << 1] = (out[i << 1] + (state[15] >> 1)) >> 15;
-    }
+#else
+// Will never be emitted for MSVC, GCC, Intel compilers
+    static const uint8_t byte_to_unary_table[] = {
+    8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    };
+    return word > 0xffffff ? byte_to_unary_table[v >> 24] :
+        word > 0xffff ? byte_to_unary_table[v >> 16] + 8 :
+        word > 0xff ? byte_to_unary_table[v >> 8] + 16 :
+        byte_to_unary_table[v] + 24;
+#endif
 }
 
-// interpolation coefficients
-static const int16_t kCoefficients48To32[2][8] = {
-        {778, -2050, 1087,  23285, 12903, -3783, 441,   222},
-        {222, 441,   -3783, 12903, 23285, 1087,  -2050, 778}
-};
+// Return the number of steps a can be left-shifted without overflow,
+// or 0 if a == 0.
+static __inline int16_t NormU32(uint32_t a) {
+
+    if (a == 0) return 0;
+    return (int16_t) __clz_uint32(a);
+}
 
 
-////////////////////////////
-///// 48 kHz ->  8 kHz /////
-////////////////////////////
+// Return the number of steps a can be left-shifted without overflow,
+// or 0 if a == 0.
+static __inline int16_t NormW32(int32_t a) {
 
-void WebRtcSpl_Resample48khzTo32khz(const int32_t *In, int32_t *Out, size_t K) {
-    /////////////////////////////////////////////////////////////
-    // Filter operation:
-    //
-    // Perform resampling (3 input samples -> 2 output samples);
-    // process in sub blocks of size 3 samples.
-    int32_t tmp;
-    size_t m;
+    if (a == 0) return 0;
+    uint32_t v = (uint32_t) (a < 0 ? ~a : a);
+    // Returns the number of leading zero bits in the argument.
+    return (int16_t) (__clz_uint32(v) - 1);
+}
 
-    for (m = 0; m < K; m++) {
-        tmp = 1 << 14;
-        tmp += kCoefficients48To32[0][0] * In[0];
-        tmp += kCoefficients48To32[0][1] * In[1];
-        tmp += kCoefficients48To32[0][2] * In[2];
-        tmp += kCoefficients48To32[0][3] * In[3];
-        tmp += kCoefficients48To32[0][4] * In[4];
-        tmp += kCoefficients48To32[0][5] * In[5];
-        tmp += kCoefficients48To32[0][6] * In[6];
-        tmp += kCoefficients48To32[0][7] * In[7];
-        Out[0] = tmp;
-
-        tmp = 1 << 14;
-        tmp += kCoefficients48To32[1][0] * In[1];
-        tmp += kCoefficients48To32[1][1] * In[2];
-        tmp += kCoefficients48To32[1][2] * In[3];
-        tmp += kCoefficients48To32[1][3] * In[4];
-        tmp += kCoefficients48To32[1][4] * In[5];
-        tmp += kCoefficients48To32[1][5] * In[6];
-        tmp += kCoefficients48To32[1][6] * In[7];
-        tmp += kCoefficients48To32[1][7] * In[8];
-        Out[1] = tmp;
-
-        // update pointers
-        In += 3;
-        Out += 2;
+void resampleData(const int16_t *sourceData, int32_t sampleRate, uint32_t srcSize, int16_t *destinationData,
+                  int32_t newSampleRate) {
+    if (sampleRate == newSampleRate) {
+        memcpy(destinationData, sourceData, srcSize * sizeof(int16_t));
+        return;
+    }
+    uint32_t last_pos = srcSize - 1;
+    uint32_t dstSize = (uint32_t) (srcSize * ((float) newSampleRate / sampleRate));
+    for (uint32_t idx = 0; idx < dstSize; idx++) {
+        float index = ((float) idx * sampleRate) / (newSampleRate);
+        uint32_t p1 = (uint32_t) index;
+        float coef = index - p1;
+        uint32_t p2 = (p1 == last_pos) ? last_pos : p1 + 1;
+        destinationData[idx] = (int16_t) ((1.0f - coef) * sourceData[p1] + coef * sourceData[p2]);
     }
 }
-
-// 48 -> 8 resampler
-void WebRtcSpl_Resample48khzTo8khz(const int16_t *in, int16_t *out,
-                                   WebRtcSpl_State48khzTo8khz *state, int32_t *tmpmem) {
-    ///// 48 --> 24 /////
-    // int16_t  in[480]
-    // int32_t out[240]
-    /////
-    WebRtcSpl_DownBy2ShortToInt(in, 480, tmpmem + 256, state->S_48_24);
-
-    ///// 24 --> 24(LP) /////
-    // int32_t  in[240]
-    // int32_t out[240]
-    /////
-    WebRtcSpl_LPBy2IntToInt(tmpmem + 256, 240, tmpmem + 16, state->S_24_24);
-
-    ///// 24 --> 16 /////
-    // int32_t  in[240]
-    // int32_t out[160]
-    /////
-    // copy state to and from input array
-    memcpy(tmpmem + 8, state->S_24_16, 8 * sizeof(int32_t));
-    memcpy(state->S_24_16, tmpmem + 248, 8 * sizeof(int32_t));
-    WebRtcSpl_Resample48khzTo32khz(tmpmem + 8, tmpmem, 80);
-
-    ///// 16 --> 8 /////
-    // int32_t  in[160]
-    // int16_t out[80]
-    /////
-    WebRtcSpl_DownBy2IntToShort(tmpmem, 160, out, state->S_16_8);
-}
-
-// initialize state of 48 -> 8 resampler
-void WebRtcSpl_ResetResample48khzTo8khz(WebRtcSpl_State48khzTo8khz *state) {
-    memset(state->S_48_24, 0, 8 * sizeof(int32_t));
-    memset(state->S_24_24, 0, 16 * sizeof(int32_t));
-    memset(state->S_24_16, 0, 8 * sizeof(int32_t));
-    memset(state->S_16_8, 0, 8 * sizeof(int32_t));
-}
-
 
 // Spectrum Weighting
 static const int16_t kSpectrumWeight[kNumChannels] = {6, 8, 10, 12, 14, 16};
@@ -616,8 +297,8 @@ static int16_t GmmProbability(VadInstT *self, int16_t *features,
             // Note that b0 and b1 are values less than 1, hence, 0 <= log2(1+b0) < 1.
             // Further, b0 and b1 are independent and on the average the two terms
             // cancel.
-            shifts_h0 = WebRtcSpl_NormW32(h0_test);
-            shifts_h1 = WebRtcSpl_NormW32(h1_test);
+            shifts_h0 = NormW32(h0_test);
+            shifts_h1 = NormW32(h1_test);
             if (h0_test == 0) {
                 shifts_h0 = 31;
             }
@@ -644,7 +325,7 @@ static int16_t GmmProbability(VadInstT *self, int16_t *features,
                 // High probability of noise. Assign conditional probabilities for each
                 // Gaussian in the GMM.
                 tmp1_s32 = (noise_probability[0] & 0xFFFFF000) << 2;  // Q29
-                ngprvec[channel] = (int16_t) WebRtcSpl_DivW32W16(tmp1_s32, h0);  // Q14
+                ngprvec[channel] = (int16_t) DivW32W16(tmp1_s32, h0);  // Q14
                 ngprvec[channel + kNumChannels] = 16384 - ngprvec[channel];
             } else {
                 // Low noise probability. Assign conditional probability 1 to the first
@@ -658,7 +339,7 @@ static int16_t GmmProbability(VadInstT *self, int16_t *features,
                 // High probability of speech. Assign conditional probabilities for each
                 // Gaussian in the GMM. Otherwise use the initialized values, i.e., 0.
                 tmp1_s32 = (speech_probability[0] & 0xFFFFF000) << 2;  // Q29
-                sgprvec[channel] = (int16_t) WebRtcSpl_DivW32W16(tmp1_s32, h1);  // Q14
+                sgprvec[channel] = (int16_t) DivW32W16(tmp1_s32, h1);  // Q14
                 sgprvec[channel + kNumChannels] = 16384 - sgprvec[channel];
             }
         }
@@ -754,9 +435,9 @@ static int16_t GmmProbability(VadInstT *self, int16_t *features,
 
                     // 0.1 * Q20 / Q7 = Q13.
                     if (tmp2_s32 > 0) {
-                        tmp_s16 = (int16_t) WebRtcSpl_DivW32W16(tmp2_s32, ssk * 10);
+                        tmp_s16 = (int16_t) DivW32W16(tmp2_s32, ssk * 10);
                     } else {
-                        tmp_s16 = (int16_t) WebRtcSpl_DivW32W16(-tmp2_s32, ssk * 10);
+                        tmp_s16 = (int16_t) DivW32W16(-tmp2_s32, ssk * 10);
                         tmp_s16 = -tmp_s16;
                     }
                     // Divide by 4 giving an update factor of 0.025 (= 0.1 / 4).
@@ -787,9 +468,9 @@ static int16_t GmmProbability(VadInstT *self, int16_t *features,
 
                     // Q20 / Q7 = Q13.
                     if (tmp1_s32 > 0) {
-                        tmp_s16 = (int16_t) WebRtcSpl_DivW32W16(tmp1_s32, nsk);
+                        tmp_s16 = (int16_t) DivW32W16(tmp1_s32, nsk);
                     } else {
-                        tmp_s16 = (int16_t) WebRtcSpl_DivW32W16(-tmp1_s32, nsk);
+                        tmp_s16 = (int16_t) DivW32W16(-tmp1_s32, nsk);
                         tmp_s16 = -tmp_s16;
                     }
                     tmp_s16 += 32;  // Rounding
@@ -898,8 +579,6 @@ int WebRtcVad_InitCore(VadInstT *self) {
     memset(self->downsampling_filter_states, 0,
            sizeof(self->downsampling_filter_states));
 
-    // Initialization of 48 to 8 kHz downsampling.
-    WebRtcSpl_ResetResample48khzTo8khz(&self->state_48_to_8);
 
     // Read initial PDF parameters.
     for (i = 0; i < kTableSize; i++) {
@@ -997,69 +676,6 @@ int WebRtcVad_set_mode_core(VadInstT *self, int mode) {
 // Calculate VAD decision by first extracting feature values and then calculate
 // probability for both speech and background noise.
 
-int WebRtcVad_CalcVad48khz(VadInstT *inst, const int16_t *speech_frame,
-                           size_t frame_length) {
-    int vad;
-    size_t i;
-    int16_t speech_nb[240];  // 30 ms in 8 kHz.
-    // |tmp_mem| is a temporary memory used by resample function, length is
-    // frame length in 10 ms (480 samples) + 256 extra.
-    int32_t tmp_mem[480 + 256] = {0};
-    const size_t kFrameLen10ms48khz = 480;
-    const size_t kFrameLen10ms8khz = 80;
-    size_t num_10ms_frames = frame_length / kFrameLen10ms48khz;
-
-    for (i = 0; i < num_10ms_frames; i++) {
-        WebRtcSpl_Resample48khzTo8khz(speech_frame,
-                                      &speech_nb[i * kFrameLen10ms8khz],
-                                      &inst->state_48_to_8,
-                                      tmp_mem);
-    }
-
-    // Do VAD on an 8 kHz signal
-    vad = WebRtcVad_CalcVad8khz(inst, speech_nb, frame_length / 6);
-
-    return vad;
-}
-
-int WebRtcVad_CalcVad32khz(VadInstT *inst, const int16_t *speech_frame,
-                           size_t frame_length) {
-    size_t len;
-    int vad;
-    int16_t speechWB[480]; // Downsampled speech frame: 960 samples (30ms in SWB)
-    int16_t speechNB[240]; // Downsampled speech frame: 480 samples (30ms in WB)
-
-
-    // Downsample signal 32->16->8 before doing VAD
-    WebRtcVad_Downsampling(speech_frame, speechWB, &(inst->downsampling_filter_states[2]),
-                           frame_length);
-    len = frame_length / 2;
-
-    WebRtcVad_Downsampling(speechWB, speechNB, inst->downsampling_filter_states, len);
-    len /= 2;
-
-    // Do VAD on an 8 kHz signal
-    vad = WebRtcVad_CalcVad8khz(inst, speechNB, len);
-
-    return vad;
-}
-
-int WebRtcVad_CalcVad16khz(VadInstT *inst, const int16_t *speech_frame,
-                           size_t frame_length) {
-    size_t len;
-    int vad;
-    int16_t speechNB[240]; // Downsampled speech frame: 480 samples (30ms in WB)
-
-    // Wideband: Downsample signal before doing VAD
-    WebRtcVad_Downsampling(speech_frame, speechNB, inst->downsampling_filter_states,
-                           frame_length);
-
-    len = frame_length / 2;
-    vad = WebRtcVad_CalcVad8khz(inst, speechNB, len);
-
-    return vad;
-}
-
 int WebRtcVad_CalcVad8khz(VadInstT *inst, const int16_t *speech_frame,
                           size_t frame_length) {
     int16_t feature_vector[kNumChannels], total_power;
@@ -1075,7 +691,7 @@ int WebRtcVad_CalcVad8khz(VadInstT *inst, const int16_t *speech_frame,
 }
 
 static __inline int16_t WebRtcSpl_GetSizeInBits(uint32_t n) {
-    return 32 - WebRtcSpl_CountLeadingZeros32(n);
+    return (int16_t) 32 - (n == 0 ? (int16_t) 32 : (int16_t) __clz_uint32(n));
 }
 
 int16_t WebRtcSpl_GetScalingSquare(int16_t *in_vector,
@@ -1093,7 +709,7 @@ int16_t WebRtcSpl_GetScalingSquare(int16_t *in_vector,
         sabs = (*sptr > 0 ? *sptr++ : -*sptr++);
         smax = (sabs > smax ? sabs : smax);
     }
-    t = WebRtcSpl_NormW32(WEBRTC_SPL_MUL(smax, smax));
+    t = NormW32(((int32_t) ((int32_t) (smax) * (int32_t) (smax))));
 
     if (smax == 0) {
         return 0; // Since norm(0) returns 0
@@ -1124,41 +740,9 @@ int32_t WebRtcSpl_Energy(int16_t *vector,
 
 // Allpass filter coefficients, upper and lower, in Q13.
 // Upper: 0.64, Lower: 0.17.
-static const int16_t kAllPassCoefsQ13[2] = {5243, 1392};  // Q13.
 static const int16_t kSmoothingDown = 6553;  // 0.2 in Q15.
 static const int16_t kSmoothingUp = 32439;  // 0.99 in Q15.
 
-// TODO(bjornv): Move this function to vad_filterbank.c.
-// Downsampling filter based on splitting filter and allpass functions.
-void WebRtcVad_Downsampling(const int16_t *signal_in,
-                            int16_t *signal_out,
-                            int32_t *filter_state,
-                            size_t in_length) {
-    int16_t tmp16_1 = 0, tmp16_2 = 0;
-    int32_t tmp32_1 = filter_state[0];
-    int32_t tmp32_2 = filter_state[1];
-    size_t n = 0;
-    // Downsampling by 2 gives half length.
-    size_t half_length = (in_length >> 1);
-
-    // Filter coefficients in Q13, filter state in Q0.
-    for (n = 0; n < half_length; n++) {
-        // All-pass filtering upper branch.
-        tmp16_1 = (int16_t) ((tmp32_1 >> 1) +
-                             ((kAllPassCoefsQ13[0] * *signal_in) >> 14));
-        *signal_out = tmp16_1;
-        tmp32_1 = (int32_t) (*signal_in++) - ((kAllPassCoefsQ13[0] * tmp16_1) >> 12);
-
-        // All-pass filtering lower branch.
-        tmp16_2 = (int16_t) ((tmp32_2 >> 1) +
-                             ((kAllPassCoefsQ13[1] * *signal_in) >> 14));
-        *signal_out++ += tmp16_2;
-        tmp32_2 = (int32_t) (*signal_in++) - ((kAllPassCoefsQ13[1] * tmp16_2) >> 12);
-    }
-    // Store the filter states.
-    filter_state[0] = tmp32_1;
-    filter_state[1] = tmp32_2;
-}
 
 // Inserts |feature_value| into |low_value_vector|, if it is one of the 16
 // smallest values the last 100 frames. Then calculates and returns the median
@@ -1276,7 +860,7 @@ int16_t WebRtcVad_FindMinimum(VadInstT *self,
         }
     }
     tmp32 = (alpha + 1) * self->mean_value[channel];
-    tmp32 += (WEBRTC_SPL_WORD16_MAX - alpha) * current_median;
+    tmp32 += (32767 - alpha) * current_median;
     tmp32 += 16384;
     self->mean_value[channel] = (int16_t) (tmp32 >> 15);
 
@@ -1308,7 +892,7 @@ int32_t WebRtcVad_GaussianProbability(int16_t input,
     // 131072 = 1 in Q17, and (|std| >> 1) is for rounding instead of truncation.
     // Q-domain: Q17 / Q7 = Q10.
     tmp32 = (int32_t) 131072 + (int32_t) (std >> 1);
-    inv_std = (int16_t) WebRtcSpl_DivW32W16(tmp32, std);
+    inv_std = (int16_t) DivW32W16(tmp32, std);
 
     // Calculate |inv_std2| = 1 / s^2, in Q14.
     tmp16 = (inv_std >> 2);  // Q10 -> Q8.
@@ -1506,7 +1090,7 @@ static void LogOfEnergy(const int16_t *data_in, size_t data_length,
     if (energy != 0) {
         // By construction, normalizing to 15 bits is equivalent with 17 leading
         // zeros of an unsigned 32 bit value.
-        int normalizing_rshifts = 17 - WebRtcSpl_NormU32(energy);
+        int normalizing_rshifts = 17 - NormU32(energy);
         // In a 15 bit representation the leading bit is 2^14. log2(2^14) in Q10 is
         // (14 << 10), which is what we initialize |log2_energy| with. For a more
         // detailed derivations, see below.
@@ -1668,15 +1252,9 @@ int16_t WebRtcVad_CalculateFeatures(VadInstT *self, const int16_t *data_in,
 }
 
 
-static const int kValidRates[] = {8000, 16000, 32000, 48000};
-static const size_t kRatesSize = sizeof(kValidRates) / sizeof(*kValidRates);
-static const int kMaxFrameLengthMs = 30;
-
 VadInst *WebRtcVad_Create() {
     VadInstT *self = (VadInstT *) malloc(sizeof(VadInstT));
-
     self->init_flag = 0;
-
     return (VadInst *) self;
 }
 
@@ -1705,61 +1283,42 @@ int WebRtcVad_set_mode(VadInst *handle, int mode) {
 }
 
 int WebRtcVad_Process(VadInst *handle, int fs, const int16_t *audio_frame,
-                      size_t frame_length) {
+                      size_t frame_length, int keep_weight) {
     int vad = -1;
     VadInstT *self = (VadInstT *) handle;
 
     if (handle == NULL) {
-        return -1;
+        return vad;
     }
 
     if (self->init_flag != kInitCheck) {
-        return -1;
+        return vad;
     }
     if (audio_frame == NULL) {
-        return -1;
+        return vad;
     }
-    if (WebRtcVad_ValidRateAndFrameLength(fs, frame_length) != 0) {
-        return -1;
-    }
-
-    if (fs == 48000) {
-        vad = WebRtcVad_CalcVad48khz(self, audio_frame, frame_length);
-    } else if (fs == 32000) {
-        vad = WebRtcVad_CalcVad32khz(self, audio_frame, frame_length);
-    } else if (fs == 16000) {
-        vad = WebRtcVad_CalcVad16khz(self, audio_frame, frame_length);
-    } else if (fs == 8000) {
+    if (fs < 8000)
+        return vad;
+    if (fs == 8000) {
         vad = WebRtcVad_CalcVad8khz(self, audio_frame, frame_length);
+    } else {
+        int16_t speech_nb[240];  // 30 ms in 8 kHz.
+        const size_t kFrameLen10ms = (size_t) (fs / 100);
+        const size_t kFrameLen10ms8khz = 80;
+        size_t num_10ms_frames = frame_length / kFrameLen10ms;
+        int i = 0;
+        for (i = 0; i < num_10ms_frames; i++) {
+            resampleData(audio_frame, fs, kFrameLen10ms, &speech_nb[i * kFrameLen10ms8khz],
+                         8000);
+        }
+        size_t new_frame_length = frame_length * 8000 / fs;
+        // Do VAD on an 8 kHz signal
+        vad = WebRtcVad_CalcVad8khz(self, speech_nb, new_frame_length);
     }
-
-    if (vad > 0) {
-        vad = 1;
-    }
-    return vad;
-}
-
-int WebRtcVad_ValidRateAndFrameLength(int rate, size_t frame_length) {
-    int return_value = -1;
-    size_t i;
-    int valid_length_ms;
-    size_t valid_length;
-
-    // We only allow 10, 20 or 30 ms frames. Loop through valid frame rates and
-    // see if we have a matching pair.
-    for (i = 0; i < kRatesSize; i++) {
-        if (kValidRates[i] == rate) {
-            for (valid_length_ms = 10; valid_length_ms <= kMaxFrameLengthMs;
-                 valid_length_ms += 10) {
-                valid_length = (size_t) (kValidRates[i] / 1000 * valid_length_ms);
-                if (frame_length == valid_length) {
-                    return_value = 0;
-                    break;
-                }
-            }
-            break;
+    if (keep_weight != 0) {
+        if (vad > 0) {
+            vad = 1;
         }
     }
-
-    return return_value;
+    return vad;
 }

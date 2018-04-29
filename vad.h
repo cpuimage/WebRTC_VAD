@@ -36,65 +36,6 @@
 #define RTC_DCHECK_LE(a, b) RTC_DCHECK((a) <= (b))
 #define RTC_DCHECK_LT(a, b) RTC_DCHECK((a) < (b))
 #define RTC_DCHECK_GT(a, b) RTC_DCHECK((a) > (b))
-#define WEBRTC_SPL_WORD16_MAX       32767
-#define WEBRTC_SPL_MUL(a, b) \
-    ((int32_t) ((int32_t)(a) * (int32_t)(b)))
-
-typedef struct {
-    int32_t S_48_24[8];
-    int32_t S_24_24[16];
-    int32_t S_24_16[8];
-    int32_t S_16_8[8];
-} WebRtcSpl_State48khzTo8khz;
-
-// Table used by WebRtcSpl_CountLeadingZeros32_NotBuiltin. For each uint32_t n
-// that's a sequence of 0 bits followed by a sequence of 1 bits, the entry at
-// index (n * 0x8c0b2891) >> 26 in this table gives the number of zero bits in
-// n.
-static const int8_t kWebRtcSpl_CountLeadingZeros32_Table[64] = {
-        32, 8, 17, -1, -1, 14, -1, -1, -1, 20, -1, -1, -1, 28, -1, 18,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 26, 25, 24,
-        4, 11, 23, 31, 3, 7, 10, 16, 22, 30, -1, -1, 2, 6, 13, 9,
-        -1, 15, -1, 21, -1, 29, 19, -1, -1, -1, -1, -1, 1, 27, 5, 12,
-};
-
-// Don't call this directly except in tests!
-static __inline int WebRtcSpl_CountLeadingZeros32_NotBuiltin(uint32_t n) {
-    // Normalize n by rounding up to the nearest number that is a sequence of 0
-    // bits followed by a sequence of 1 bits. This number has the same number of
-    // leading zeros as the original n. There are exactly 33 such values.
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-
-    // Multiply the modified n with a constant selected (by exhaustive search)
-    // such that each of the 33 possible values of n give a product whose 6 most
-    // significant bits are unique. Then look up the answer in the table.
-    return kWebRtcSpl_CountLeadingZeros32_Table[(n * 0x8c0b2891) >> 26];
-}
-
-// Returns the number of leading zero bits in the argument.
-static __inline int WebRtcSpl_CountLeadingZeros32(uint32_t n) {
-#ifdef __GNUC__
-    return n == 0 ? 32 : __builtin_clz(n);
-#else
-    return WebRtcSpl_CountLeadingZeros32_NotBuiltin(n);
-#endif
-}
-
-// Return the number of steps a can be left-shifted without overflow,
-// or 0 if a == 0.
-static __inline int16_t WebRtcSpl_NormW32(int32_t a) {
-    return a == 0 ? 0 : WebRtcSpl_CountLeadingZeros32(a < 0 ? ~a : a) - 1;
-}
-
-// Return the number of steps a can be left-shifted without overflow,
-// or 0 if a == 0.
-static __inline int16_t WebRtcSpl_NormU32(uint32_t a) {
-    return a == 0 ? 0 : WebRtcSpl_CountLeadingZeros32(a);
-}
 
 int32_t WebRtcSpl_Energy(int16_t *vector,
                          size_t vector_length,
@@ -116,7 +57,6 @@ enum {
 typedef struct VadInstT_ {
     int vad;
     int32_t downsampling_filter_states[4];
-    WebRtcSpl_State48khzTo8khz state_48_to_8;
     int16_t noise_means[kTableSize];
     int16_t speech_means[kTableSize];
     int16_t noise_stds[kTableSize];
@@ -170,9 +110,7 @@ int WebRtcVad_InitCore(VadInstT *self);
 int WebRtcVad_set_mode_core(VadInstT *self, int mode);
 
 /****************************************************************************
- * WebRtcVad_CalcVad48khz(...)
- * WebRtcVad_CalcVad32khz(...)
- * WebRtcVad_CalcVad16khz(...)
+
  * WebRtcVad_CalcVad8khz(...)
  *
  * Calculate probability for active speech and make VAD decision.
@@ -189,35 +127,9 @@ int WebRtcVad_set_mode_core(VadInstT *self, int mode);
  *                        0 - No active speech
  *                        1-6 - Active speech
  */
-int WebRtcVad_CalcVad48khz(VadInstT *inst, const int16_t *speech_frame,
-                           size_t frame_length);
-
-int WebRtcVad_CalcVad32khz(VadInstT *inst, const int16_t *speech_frame,
-                           size_t frame_length);
-
-int WebRtcVad_CalcVad16khz(VadInstT *inst, const int16_t *speech_frame,
-                           size_t frame_length);
-
 int WebRtcVad_CalcVad8khz(VadInstT *inst, const int16_t *speech_frame,
                           size_t frame_length);
 
-// Downsamples the signal by a factor 2, eg. 32->16 or 16->8.
-//
-// Inputs:
-//      - signal_in     : Input signal.
-//      - in_length     : Length of input signal in samples.
-//
-// Input & Output:
-//      - filter_state  : Current filter states of the two all-pass filters. The
-//                        |filter_state| is updated after all samples have been
-//                        processed.
-//
-// Output:
-//      - signal_out    : Downsampled signal (of length |in_length| / 2).
-void WebRtcVad_Downsampling(const int16_t *signal_in,
-                            int16_t *signal_out,
-                            int32_t *filter_state,
-                            size_t in_length);
 
 // Updates and returns the smoothed feature minimum. As minimum we use the
 // median of the five smallest feature values in a 100 frames long window.
@@ -326,21 +238,13 @@ int WebRtcVad_set_mode(VadInst *handle, int mode);
 // - fs           [i]   : Sampling frequency (Hz): 8000, 16000, or 32000
 // - audio_frame  [i]   : Audio frame buffer.
 // - frame_length [i]   : Length of audio frame buffer in number of samples.
+// - keep_weight [i]   : return active voice weight
 //
 // returns              : 1 - (Active Voice),
 //                        0 - (Non-active Voice),
 //                       -1 - (Error)
 int WebRtcVad_Process(VadInst *handle, int fs, const int16_t *audio_frame,
-                      size_t frame_length);
-
-// Checks for valid combinations of |rate| and |frame_length|. We support 10,
-// 20 and 30 ms frames and the rates 8000, 16000 and 32000 Hz.
-//
-// - rate         [i] : Sampling frequency (Hz).
-// - frame_length [i] : Speech frame buffer length in number of samples.
-//
-// returns            : 0 - (valid combination), -1 - (invalid combination)
-int WebRtcVad_ValidRateAndFrameLength(int rate, size_t frame_length);
+                      size_t frame_length, int keep_weight);
 
 #ifdef __cplusplus
 }
