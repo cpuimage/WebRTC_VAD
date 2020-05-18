@@ -2,11 +2,11 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "timing.h"
-//采用https://github.com/mackron/dr_libs/blob/master/dr_wav.h 解码
+
 #define DR_WAV_IMPLEMENTATION
 
 #include "dr_wav.h"
-#include "vad.h"
+#include "vad/include/vad.h"
 
 #ifndef nullptr
 #define nullptr 0
@@ -24,13 +24,13 @@
 //读取wav文件
 int16_t *wavRead_int16(char *filename, uint32_t *sampleRate, uint64_t *totalSampleCount) {
     unsigned int channels;
-    int16_t *buffer = drwav_open_and_read_file_s16(filename, &channels, sampleRate, totalSampleCount);
+    int16_t *buffer = drwav_open_file_and_read_pcm_frames_s16(filename, &channels, sampleRate, totalSampleCount, NULL);
     if (buffer == nullptr) {
         printf("读取wav文件失败.");
     }
     //仅仅处理单通道音频
     if (channels != 1) {
-        drwav_free(buffer);
+        drwav_free(buffer, NULL);
         buffer = nullptr;
         *sampleRate = 0;
         *totalSampleCount = 0;
@@ -48,9 +48,9 @@ int vadProcess(int16_t *buffer, uint32_t sampleRate, size_t samplesCount, int16_
     size_t samples = sampleRate * per_ms_frames / 1000;
     if (samples == 0) return -1;
     int16_t *input = buffer;
-    size_t nTotal = (samplesCount / samples);
+    size_t nCount = (samplesCount / samples);
 
-    void *vadInst = WebRtcVad_Create();
+    VadInst *vadInst = WebRtcVad_Create();
     if (vadInst == NULL) return -1;
     int status = WebRtcVad_Init(vadInst);
     if (status != 0) {
@@ -65,9 +65,8 @@ int vadProcess(int16_t *buffer, uint32_t sampleRate, size_t samplesCount, int16_
         return -1;
     }
     printf("Activity ： \n");
-    for (int i = 0; i < nTotal; i++) {
-        int keep_weight = 0;
-        int nVadRet = WebRtcVad_Process(vadInst, sampleRate, input, samples, keep_weight);
+    for (size_t i = 0; i < nCount; i++) {
+        int nVadRet = WebRtcVad_Process(vadInst, sampleRate, input, samples);
         if (nVadRet == -1) {
             printf("failed in WebRtcVad_Process\n");
             WebRtcVad_Free(vadInst);
@@ -104,13 +103,15 @@ void vad(char *in_file) {
 
 int main(int argc, char *argv[]) {
     printf("WebRTC Voice Activity Detector\n");
-    printf("博客:http://cpuimage.cnblogs.com/\n");
-    printf("静音检测\n");
+    printf("blog:http://cpuimage.cnblogs.com/\n");
+    printf("usage : vad speech.wav\n");
     if (argc < 2)
         return -1;
     char *in_file = argv[1];
     vad(in_file);
-    printf("按任意键退出程序 \n");
+    printf("press any key to exit. \n");
     getchar();
     return 0;
 }
+
+

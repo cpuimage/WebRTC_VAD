@@ -1,0 +1,55 @@
+/*
+ *  Copyright (c) 2014 The WebRTC project authors. All Rights Reserved.
+ *
+ *  Use of this source code is governed by a BSD-style license
+ *  that can be found in the LICENSE file in the root of the source
+ *  tree. An additional intellectual property rights grant can be found
+ *  in the file PATENTS.  All contributing project authors may
+ *  be found in the AUTHORS file in the root of the source tree.
+ */
+
+#include "include/vad.h"
+
+
+class VadImpl final : public Vad {
+public:
+    explicit VadImpl(Aggressiveness aggressiveness)
+            : handle_(nullptr), aggressiveness_(aggressiveness) {
+        Reset();
+    }
+
+    ~VadImpl() override { WebRtcVad_Free(handle_); }
+
+    Activity VoiceActivity(const int16_t *audio,
+                           size_t num_samples,
+                           int sample_rate_hz) override {
+        int ret = WebRtcVad_Process(handle_, sample_rate_hz, audio, num_samples);
+        switch (ret) {
+            case 0:
+                return kPassive;
+            case 1:
+                return kActive;
+            default:
+//        RTC_NOTREACHED() << "WebRtcVad_Process returned an error.";
+                return kError;
+        }
+    }
+
+    void Reset() override {
+        if (handle_)
+            WebRtcVad_Free(handle_);
+        handle_ = WebRtcVad_Create();
+        RTC_DCHECK(handle_);
+        RTC_DCHECK_EQ(WebRtcVad_Init(handle_), 0);
+        RTC_DCHECK_EQ(WebRtcVad_set_mode(handle_, aggressiveness_), 0);
+    }
+
+private:
+    VadInst *handle_;
+    Aggressiveness aggressiveness_;
+};
+
+
+std::unique_ptr<Vad> CreateVad(Vad::Aggressiveness aggressiveness) {
+    return std::unique_ptr<Vad>(new VadImpl(aggressiveness));
+}
